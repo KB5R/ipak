@@ -1,0 +1,45 @@
+# Python environments and bytecode
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build, analysis and test artifacts
+/build/
+/dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+/htmlcov/
+/coverage.xml
+*.log
+
+# Generated validation output (keep the Markdown reports and capture tools)
+/docs/screenshots/
+/docs/*-local.txt
+/docs/*-vm.txt
+
+# Local configuration and authentication material
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.keytab
+krb5cc*
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+/docs
+# Local approved specification
+IPAK-TUI-SPEC.md
+/tests
