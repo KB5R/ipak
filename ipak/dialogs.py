@@ -9,6 +9,27 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Input, OptionList, Static
 
 from .app import ContextFooter, TopBar
+from .ui_trace import trace
+
+
+class ButtonDialog(ModalScreen):
+    """Make the keyboard target explicit even in terminals without color."""
+
+    BINDINGS = [("left", "move_button(-1)", "Previous button"),
+                ("right", "move_button(1)", "Next button")]
+
+    def action_move_button(self, direction):
+        buttons = list(self.query(".dialog-buttons Button"))
+        if self.focused in buttons:
+            buttons[(buttons.index(self.focused) + direction) % len(buttons)].focus()
+
+    def on_descendant_focus(self, event):
+        hints = self.query(".button-focus-hint")
+        if hints:
+            hints.first(Static).update(
+                f"Enter: {event.widget.label} · ←/→ / Tab: move" if isinstance(event.widget, Button)
+                else "Tab / Shift+Tab: select a button"
+            )
 
 
 class ScrollBody(VerticalScroll):
@@ -40,12 +61,13 @@ class InputDialog(ModalScreen):
         self.dismiss(None)
 
 
-class ReviewDialog(ModalScreen[bool]):
+class ReviewDialog(ButtonDialog):
     BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, title: str, lines: list[str], *, apply_label: str = "Apply"):
+    def __init__(self, title: str, lines: list[str], *, apply_label: str = "Apply", instructions: str = ""):
         super().__init__()
         self.title_text, self.lines, self.apply_label = title, lines, apply_label
+        self.instructions = instructions
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog review-dialog"):
@@ -55,19 +77,26 @@ class ReviewDialog(ModalScreen[bool]):
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Cancel", id="cancel")
                 yield Button(self.apply_label, id="apply", variant="primary")
+            yield Static("", classes="button-focus-hint", markup=False)
+            if self.instructions:
+                yield Static(self.instructions, markup=False)
 
     def on_mount(self):
+        trace("review.open parent=" + type(self.app.screen_stack[-2]).__name__)
         self.query_one("#cancel").focus()
 
     @on(Button.Pressed)
     def choose(self, event):
+        event.stop()
+        trace("review.button." + event.button.id)
         self.dismiss(event.button.id == "apply")
 
     def action_cancel(self):
+        trace("review.escape")
         self.dismiss(False)
 
 
-class DraftDialog(ModalScreen[str]):
+class DraftDialog(ButtonDialog):
     BINDINGS = [("escape", "stay", "Stay")]
 
     def compose(self):
@@ -78,9 +107,16 @@ class DraftDialog(ModalScreen[str]):
                 yield Button("Stay", id="stay")
                 yield Button("Discard", id="discard")
                 yield Button("Return (keep draft)", id="keep")
+            yield Static("", classes="button-focus-hint", markup=False)
+
+    def on_mount(self):
+        trace("draft.open")
+        self.query_one("#stay").focus()
 
     @on(Button.Pressed)
     def choose(self, event):
+        event.stop()
+        trace("draft.button." + event.button.id)
         self.dismiss(event.button.id)
 
     def action_stay(self):
@@ -127,10 +163,12 @@ class ResultsScreen(Screen):
         yield ContextFooter()
 
     def on_mount(self):
+        trace("results.open")
         self.render_results()
         self.query_one("#results-body").focus()
 
     def render_results(self):
+        trace(f"results.render total={len(self.results)} ok={sum(r.success for r in self.results)} busy={self.busy}")
         lines = []
         for result in self.results:
             state = "OK" if result.success and result.verified else "CHECK" if result.success else "FAILED"

@@ -5,14 +5,15 @@ from __future__ import annotations
 from copy import deepcopy
 
 from textual import on, work
+from textual.containers import Horizontal
 from textual.markup import escape
 from textual.screen import Screen
-from textual.widgets import OptionList, Static
+from textual.widgets import Button, OptionList, Static
 
 from .app import ContextFooter, TopBar, UserTable
 from .backend import BackendError
 from .dialogs import ChoiceDialog, DraftDialog, InputDialog, ResultsScreen, ReviewDialog
-from .membership import MembershipScreen
+from .rule_selector import PRIMARY_FIELDS, RuleFieldSelector, field_label, ordered_fields
 from .rules import CATEGORIES, RuleDraft, RuleService, empty_state, validate
 
 
@@ -67,7 +68,18 @@ class OptionsScreen(Screen):
 
 
 class RuleScreen(Screen):
+    CSS = """
+    RuleScreen #rule-heading { height: 1; margin-bottom: 1; }
+    RuleScreen #rule-heading Button { height: 1; border: none; padding: 0 1; background: transparent; }
+    RuleScreen #rule-heading Button:focus { background: #375269; }
+    RuleScreen #rule-name { width: 1fr; text-align: left; content-align: left middle; }
+    RuleScreen #rule-enabled { width: auto; min-width: 12; text-align: right; content-align: right middle; }
+    RuleScreen #rule-description { height: auto; max-height: 3; margin-bottom: 1; }
+    RuleScreen #rule-description-text { width: 1fr; height: auto; }
+    RuleScreen #rule-description-edit { height: 1; min-width: 8; border: none; }
+    """
     BINDINGS = [("e", "edit", "Edit property"), ("u", "undo", "Undo"),
+                ("d", "description", "Description"), ("s", "state", "State"), ("n", "name", "Name"),
                 ("r", "refresh", "Refresh"), ("ctrl+s", "review", "Review"), ("escape", "back", "Back")]
 
     def __init__(self, kind, key="", *, on_saved=None):
@@ -84,7 +96,12 @@ class RuleScreen(Screen):
 
     def compose(self):
         yield TopBar()
-        yield Static(f"{'HBAC' if self.kind == 'hbacrule' else 'Sudo'} / {self.key or 'New rule'}", classes="heading", markup=False)
+        with Horizontal(id="rule-heading"):
+            yield Button(f"{'HBAC' if self.kind == 'hbacrule' else 'Sudo'} / {escape(self.key) or 'New rule'}", id="rule-name")
+            yield Button("Loading…", id="rule-enabled")
+        with Horizontal(id="rule-description"):
+            yield Static("Description   —", id="rule-description-text", markup=False)
+            yield Button("Edit", id="rule-description-edit")
         yield UserTable(id="rule-properties", cursor_type="row", show_row_labels=False)
         yield Static("Loading rule and server capabilities…", id="rule-status", classes="form-status", markup=False)
         yield ContextFooter()
@@ -120,7 +137,7 @@ class RuleScreen(Screen):
     def check_action(self, action, parameters):
         if self.busy:
             return False
-        return self.draft is not None if action in {"edit", "undo", "review"} else True
+        return self.draft is not None if action in {"edit", "undo", "review", "description", "state", "name"} else True
 
     def render_rows(self):
         if self.draft is None:
@@ -129,25 +146,20 @@ class RuleScreen(Screen):
         previous = table.current_login
         table.clear()
         state = self.draft.desired
-        table.add_row("Name", escape(self.draft.key or "(required)"), key="name")
-        table.add_row("Description", escape(state.description or "Not provided"), key="description")
-        table.add_row("State", "Enabled" if state.enabled else "Disabled", key="enabled")
+        self.query_one("#rule-name", Button).label = f"{'HBAC' if self.kind == 'hbacrule' else 'Sudo'} / {escape(self.draft.key) or 'New rule (name required)'}"
+        self.query_one("#rule-enabled", Button).label = "Enabled" if state.enabled else "Disabled"
+        self.query_one("#rule-description-text", Static).update(f"Description   {state.description or '—'}")
         for category in CATEGORIES[self.kind]:
             mode = state.modes[category.key]
-            if category.attribute:
-                label = "ALL" if mode == "all" else mode.capitalize()
-                if category.attribute not in self.supported:
-                    label += " (unsupported)"
-                table.add_row(f"{category.label} category", label, key=f"mode:{category.key}")
-            for member in category.members:
+            for member in ordered_fields(category):
                 selected = sorted(state.members[member.attribute])
-                value = ", ".join(selected) or "None selected"
+                value = "ALL" if mode == "all" and member.attribute == PRIMARY_FIELDS[category.key] else ", ".join(selected) or "—"
                 if not self.member_support.get(member.attribute):
                     value += " (unsupported)"
-                table.add_row(member.label, escape(value), key=f"members:{member.attribute}")
+                table.add_row(field_label(member), escape(value), key=f"members:{member.attribute}")
         if self.kind == "sudorule":
-            table.add_row("Sudo options", escape(", ".join(sorted(state.options))) or "None", key="options")
-            table.add_row("Order", state.order or "Unconfigured", key="order")
+            table.add_row("Sudo options", escape(", ".join(sorted(state.options))) or "—", key="options")
+            table.add_row("Order", state.order or "—", key="order")
         if previous and previous in table.rows:
             table.move_cursor(row=table.get_row_index(previous), animate=False)
         broad = [category.label for category in CATEGORIES[self.kind] if state.modes[category.key] == "all"]
@@ -155,7 +167,23 @@ class RuleScreen(Screen):
         if broad:
             status += " · ALL: " + ", ".join(broad)
         self.query_one("#rule-status", Static).update(status)
-        self.query_one(ContextFooter).update("↑↓/jk Property  Enter Edit / Open selector  u Undo\nCtrl+S Review entire rule  r Refresh  ? Help  Esc Back")
+        self.query_one(ContextFooter).update("↑↓/jk Move  Enter Edit  Ctrl+S Review  Esc Back\nd Description  s State  " + ("n Name  " if self.draft.is_new else "") + "u Undo  r Refresh  ? Help")
+
+    @on(Button.Pressed)
+    def header_edit(self, event):
+        key = {"rule-name": "name", "rule-enabled": "enabled", "rule-description-edit": "description"}.get(event.button.id)
+        if key and self.draft is not None and not self.busy:
+            event.stop()
+            self.edit_property(key)
+
+    def action_description(self):
+        self.edit_property("description")
+
+    def action_state(self):
+        self.edit_property("enabled")
+
+    def action_name(self):
+        self.edit_property("name")
 
     @on(UserTable.OpenRequested)
     def open_property(self, event):
@@ -174,6 +202,9 @@ class RuleScreen(Screen):
     def edit_property(self, key):
         state = self.draft.desired
         if key in {"name", "description", "order"}:
+            if key == "description" and "description" not in self.supported:
+                self.query_one("#rule-status", Static).update("Description is not supported by this server.")
+                return
             if key == "name" and not self.draft.is_new:
                 self.query_one("#rule-status", Static).update("Existing rule names are read only.")
                 return
@@ -181,7 +212,7 @@ class RuleScreen(Screen):
                 return
             value = self.draft.key if key == "name" else getattr(state, key)
             def edited(value):
-                if value is not None:
+                if value is not None and value.strip() != (self.draft.key if key == "name" else getattr(state, key)):
                     self.remember()
                     if key == "name":
                         self.draft.key = value.strip()
@@ -191,40 +222,26 @@ class RuleScreen(Screen):
             self.app.push_screen(InputDialog(key.capitalize(), value), edited)
         elif key == "enabled":
             def chosen(choice):
-                if choice:
+                if choice and (choice == "Enabled") != state.enabled:
                     self.remember()
                     state.enabled = choice == "Enabled"
                     self.render_rows()
             self.app.push_screen(ChoiceDialog("Desired rule state", ("Disabled", "Enabled")), chosen)
-        elif key.startswith("mode:"):
-            category = next(category for category in CATEGORIES[self.kind] if category.key == key.split(":", 1)[1])
-            if category.attribute not in self.supported:
-                return
-            def chosen(choice):
-                if choice:
-                    self.remember()
-                    state.modes[category.key] = choice.lower()
-                    if choice != "Selected":
-                        for member in category.members:
-                            state.members[member.attribute].clear()
-                    self.render_rows()
-            self.app.push_screen(ChoiceDialog(f"{category.label}: choose scope explicitly", ("Unconfigured", "Selected", "ALL")), chosen)
         elif key.startswith("members:"):
             attribute = key.split(":", 1)[1]
             category = next(category for category in CATEGORIES[self.kind] if any(member.attribute == attribute for member in category.members))
             member = next(member for member in category.members if member.attribute == attribute)
-            if not self.member_support.get(attribute):
+            allow_all = attribute == PRIMARY_FIELDS[category.key] and category.attribute in self.supported
+            if not self.member_support.get(attribute) and not allow_all:
                 return
-            if state.modes[category.key] == "all":
-                self.query_one("#rule-status", Static).update("Change this category from ALL to Selected before choosing members.")
-                return
-            def chosen(selected):
+            def chosen(mode, members):
                 self.remember()
-                state.members[attribute] = set(selected)
-                state.modes[category.key] = "selected" if any(state.members[item.attribute] for item in category.members) else "unconfigured"
+                state.members.update(members)
+                state.modes[category.key] = mode
                 self.render_rows()
-            self.app.push_screen(MembershipScreen("rule-draft", f"{self.draft.key or 'New rule'} / {member.label}",
-                                                 draft_target=member.kind, initial=state.members[attribute], on_accept=chosen))
+            self.app.push_screen(RuleFieldSelector(category, member, state, allow_all=allow_all,
+                                                 category_editable=category.attribute is None or category.attribute in self.supported,
+                                                 editable=self.member_support.get(attribute, False), on_accept=chosen))
         elif key == "options":
             def chosen(options):
                 self.remember()

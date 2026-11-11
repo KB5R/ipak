@@ -12,6 +12,7 @@ from .app import UserTable
 from .backend import BackendError
 from .dialogs import ResultsScreen, ReviewDialog
 from .directory import LABELS, WriteResult
+from .password_file import PasswordFile
 
 
 class PickerDialog(ModalScreen):
@@ -109,11 +110,80 @@ class ActionResultsScreen(ResultsScreen):
             self.render_results()
 
 
+class PasswordResetScreen(ActionResultsScreen):
+    BINDINGS = [("s", "save_passwords", "Retry password file")]
+
+    def __init__(self, targets, operation, output, *, on_close=None):
+        self.reset_operation, self.output = operation, output
+        self.unsaved = []
+        self.verification_before_save = {}
+        super().__init__("Reset passwords", targets, self.reset_and_save, on_close=on_close)
+
+    async def reset_and_save(self, target):
+        result = None
+        try:
+            # Check the destination before changing the remote password.
+            with self.output.open() as descriptor:
+                result = await self.reset_operation(target)
+                if result.secret:
+                    self.unsaved.append(result)
+                    self.verification_before_save[id(result)] = result.verified
+                    self.output.append(descriptor, result)
+                    self.unsaved.remove(result)
+                    self.verification_before_save.pop(id(result), None)
+                    result.message += f" · Saved to {self.output.path}"
+                return result
+        except OSError as error:
+            if result is None:
+                return WriteResult(target, False, f"Password unchanged: cannot open {self.output.path}: {error}")
+            # Remote reset succeeded: retry only the file write, never reset again.
+            result.verified = False
+            result.message += f" · FILE NOT SAVED: {error}. s Retry saving without resetting."
+            return result
+
+    def render_results(self):
+        super().render_results()
+        if self.unsaved and not self.busy:
+            footer = self.query_one("#shortcuts", Static)
+            footer.update(str(footer.content) + "\ns Retry saving unsaved passwords to file")
+
+    def check_action(self, action, parameters):
+        if action == "save_passwords":
+            return bool(self.unsaved) and not self.busy
+        return super().check_action(action, parameters)
+
+    def action_save_passwords(self):
+        try:
+            with self.output.open() as descriptor:
+                for result in list(self.unsaved):
+                    self.output.append(descriptor, result)
+                    self.unsaved.remove(result)
+                    result.verified = self.verification_before_save.pop(id(result), result.verified)
+                    result.message += f" · File saved to {self.output.path}; password was not reset again"
+        except OSError as error:
+            self.notify(f"Password file could not be saved: {error}", severity="error")
+        self.render_results()
+
+    def action_back(self):
+        if self.unsaved:
+            def discard(confirmed):
+                if confirmed:
+                    self.unsaved.clear()
+                    super(PasswordResetScreen, self).action_back()
+            self.app.push_screen(ReviewDialog("Passwords have not been saved", [
+                "Cancel and press s to retry saving to file, or p to reveal the passwords.",
+                "Leaving clears the only in-session copy for:", *[result.target for result in self.unsaved]
+            ], apply_label="Discard and leave"), discard)
+        else:
+            super().action_back()
+
+
 def user_action(screen, action: str, targets, on_close):
     targets = tuple(sorted(set(targets)))
     if not targets:
         return
     titles = {"enable": "Enable users", "disable": "Disable users", "reset": "Reset passwords", "group": "Add to group"}
+    output = PasswordFile() if action == "reset" else None
     # The callback below is also used after the asynchronous group selection.
     # It captures immutable targets, never the later cursor position or marks.
     def review(group):
@@ -122,12 +192,19 @@ def user_action(screen, action: str, targets, on_close):
             lines.append(f"Group: {group}")
         if action == "reset":
             lines.append("Generate a different temporary password for every user. Require password change at login.")
+            lines.append(f"Append logins and temporary passwords to: {output.path} (owner-only file)")
         operation = (lambda target: screen.app.directory.change_member("user", target, group, True)) if group else (
             lambda target: screen.app.directory.user_action(action, target))
         def confirmed(apply):
             if apply:
-                screen.app.push_screen(ActionResultsScreen(titles[action], targets, operation, on_close=on_close))
-        screen.app.push_screen(ReviewDialog(titles[action], lines), confirmed)
+                if action == "reset":
+                    screen.app.push_screen(PasswordResetScreen(targets, operation, output, on_close=on_close))
+                else:
+                    screen.app.push_screen(ActionResultsScreen(titles[action], targets, operation, on_close=on_close))
+            else:
+                screen.notify(f"{titles[action]} cancelled. No changes applied.", timeout=8)
+        screen.app.push_screen(ReviewDialog(titles[action], lines,
+                              instructions="Tab Select Cancel / Apply · Enter Activate selected button\nEsc Cancel · Apply is required to change users."), confirmed)
 
     if action == "group":
         screen.app.push_screen(PickerDialog("group", "Add selected users to group"),

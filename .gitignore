@@ -30,6 +30,7 @@ __pycache__/
 !.env.*.example
 *.keytab
 krb5cc*
+/yyy
 
 # Editor and OS files
 .idea/
@@ -43,3 +44,5 @@ Thumbs.db
 # Local approved specification
 IPAK-TUI-SPEC.md
 /tests
+ipak-actions.log
+IPAK-HBAC-SUDO-UX.md

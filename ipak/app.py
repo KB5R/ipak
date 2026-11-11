@@ -482,6 +482,7 @@ class UserDetailScreen(Screen[None]):
         self.login = login
         self.request_id = 0
         self.accept_responses = True
+        self.actions_completed = False
         self.load_state = "loading"
         self.detail = None
 
@@ -567,6 +568,8 @@ class UserDetailScreen(Screen[None]):
         self.request_id += 1
         self.workers.cancel_node(self)
         self.app.pop_screen()
+        if self.actions_completed and isinstance(self.app.screen, HomeScreen):
+            self.app.screen.start_load(refresh=True)
 
     def action_help(self) -> None:
         self.app.push_screen(HelpScreen("User detail"))
@@ -589,7 +592,11 @@ class UserDetailScreen(Screen[None]):
         choices = {"Enable": "enable", "Disable": "disable", "Reset password": "reset", "Add to group": "group"}
         self.app.push_screen(ChoiceDialog("User actions", tuple(choices)),
                              lambda choice: user_action(self, choices[choice], [self.login],
-                                                        lambda: self.start_load(refresh=True)) if choice else None)
+                                                        self.actions_finished) if choice else None)
+
+    def actions_finished(self):
+        self.actions_completed = True
+        self.start_load(refresh=True)
 
 
 class IPAKApp(App[None]):

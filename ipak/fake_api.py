@@ -60,7 +60,10 @@ class FakeAPI:
         self.user_attributes[key] = {name: value for name, value in row.items() if name not in {"userpassword", "randompassword"}}
         detail = user_detail(row)
         self.backend.details[key] = detail
-        self.backend.users = tuple(item for item in self.backend.users if item.login != key) + (detail.user,)
+        if any(item.login == key for item in self.backend.users):
+            self.backend.users = tuple(detail.user if item.login == key else item for item in self.backend.users)
+        else:
+            self.backend.users += (detail.user,)
 
     async def supported(self, command):
         relation = command.split("_", 2)[-1]
